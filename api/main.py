@@ -1,6 +1,9 @@
 from datetime import datetime
 import glob
 import json
+from pathlib import Path
+import re
+import sqlite3
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
@@ -137,12 +140,12 @@ async def identify_task(task: str) -> dict:
                             "type": "string",
                             "description": "Directory containing markdown files"
                         },
-                        "output_file": {
+                        "output_file_path": {
                             "type": "string",
-                            "description": "Path to output index JSON"
+                            "description": "Path to output index JSON. If not specified or invalid or without extension, returns empty string"
                         }
                     },
-                    "required": ["docs_directory", "output_file"]
+                    "required": ["docs_directory", "output_file_path"]
                 }
             },
             {
@@ -205,16 +208,16 @@ async def identify_task(task: str) -> dict:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "database_file": {
+                        "db_file_path": {
                             "type": "string",
                             "description": "Path to SQLite database file"
                         },
-                        "output_file": {
+                        "output_file_path": {
                             "type": "string",
-                            "description": "Path to output sales total file"
+                            "description": "Path to output sales total file. If not specified or invalid or without extension, returns empty string"
                         }
                     },
-                    "required": ["database_file", "output_file"]
+                    "required": ["db_file_path", "output_file_path"]
                 }
             }
         ]  
@@ -461,7 +464,38 @@ async def format_markdown(file_path: str, library: str, version: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+async def create_markdown_index(docs_directory: str, output_file_path):
+    docs_path = Path(docs_directory)
+    index = {}
     
+    for md_file in docs_path.glob('**/*.md'):
+        relative_path = str(md_file.relative_to(docs_path))
+        with open(md_file, 'r') as f:
+            content = f.read()
+            h1_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
+            if h1_match:
+                index[relative_path] = h1_match.group(1)
+    
+    with open(output_file_path, 'w') as f:
+        json.dump(index, f)
+
+async def calculate_gold_ticket_sales(db_file_path: str, output_file_path):
+    conn = sqlite3.connect(db_file_path)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT SUM(units * price)
+        FROM tickets
+        WHERE type = 'Gold'
+    """)
+    
+    total = cursor.fetchone()[0]
+    conn.close()
+    
+    with open(output_file_path, 'w') as f:
+        f.write(str(total))
+
 def run_command(command):
     try:
         result = subprocess.run(command, shell=True, capture_output=True, text=True)
