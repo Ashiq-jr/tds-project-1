@@ -2,7 +2,7 @@ import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
-import openai
+import asyncio
 import subprocess
 import sys
 import os
@@ -19,7 +19,7 @@ app.add_middleware(
 
 url = "https://llmfoundry.straive.com/openai/v1/chat/completions"
 
-os.environ["AIPROXY_TOKEN"] = ""
+os.environ["AIPROXY_TOKEN"] = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6Im1vaGFtZWRhc2hpcS5zeWVkbXVzdGFmYUBzdHJhaXZlLmNvbSJ9.aHWrV2TkUpXO3ArJbtWqUqlN-bFZtWNuFmSJETTULAg"
 api_key = os.getenv("AIPROXY_TOKEN")
 
 with open('prompt.txt', 'r') as file:
@@ -59,16 +59,16 @@ async def identify_task(task: str) -> dict:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path":{
+                        "script_path":{
                             "type": "string",
-                            "description": "Path to the script file"
+                            "description": "Full Path to the script file"
                         },
                         "email": {
                             "type": "string",
                             "description": "User's email address"
                         }
                     },
-                    "required": ["path", "email"]
+                    "required": ["script_path", "email"]
                 }
             },
             {
@@ -305,14 +305,57 @@ async def execute_code(code: str) -> str:
         raise HTTPException(status_code=500, 
                           detail=f"Code execution error: {str(e)}")
 
+async def run_datagen(script_path: str, email: str):
+    try:
+        if script_path == "" or not script_path:
+            raise HTTPException(status_code=400, detail=f"Error downloading files: script path not provided")
+        if email == "" or not email:
+            raise HTTPException(status_code=400, detail=f"Error downloading files: email not provided")
+        command = [
+            "uv", "run", 
+            f"{script_path}", 
+            f"{email}"
+        ]
+        result = subprocess.run(command, check=True, text=True, capture_output=True)
+        return {
+            "status": "success",
+            "message": f"downloaded input files",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    
+async def format_markdown(file_path: str, library: str, version: str):
+    try:
+        file_path = f".{file_path}"
+        if library == "" or not library:
+            raise HTTPException(status_code=400, detail=f"Error formatting file: library not provided")
+       
+        library_with_version = f"{library}@{version}"
+
+        os.system(f"npm install {library_with_version}")
+        os.system(f"npx {library_with_version} --check {file_path}")
+        os.system(f"npx {library_with_version} --write {file_path}")
+        
+        return {
+            "status": "success",
+            "message": f"Formatted file: {file_path}",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
 @app.post("/run")
 async def run_task(task: str):
     try:
         llm_response = await identify_task(task)
-        return{"output": llm_response}
-        await install_requirements(llm_response["requirements"])
-        result = await execute_code(llm_response["code"])
-        return {"status": "success", "output": result}
+        function_name = llm_response["name"]
+        function_args = llm_response["arguments"]
+        func = globals().get(function_name)
+        if not func or not callable(func):
+            raise HTTPException(status_code=400, 
+                            detail=f"Bad Request response: {str(e)}")
+        result = await func(**function_args)
+        return result
     except HTTPException as e:
         raise e
     except Exception as e:
