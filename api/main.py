@@ -1,3 +1,5 @@
+import datetime
+import glob
 import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,8 +22,6 @@ url = "https://llmfoundry.straive.com/openai/v1/chat/completions"
 
 api_key = os.getenv("AIPROXY_TOKEN")
 
-# with open('prompt.txt', 'r') as file:
-#     prompt = file.read()
 
 async def identify_task(task: str) -> dict:
     try:
@@ -69,8 +69,8 @@ async def identify_task(task: str) -> dict:
                 }
             },
             {
-                "name": "count_wednesdays",
-                "description": "Count Wednesdays in a list of dates",
+                "name": "count_specific_day",
+                "description": "Count occurrences of a specific day in a list of dates",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -81,9 +81,14 @@ async def identify_task(task: str) -> dict:
                         "output_file": {
                             "type": "string",
                             "description": "Path to output count file"
+                        },
+                        "day_to_count": {
+                            "type": "string",
+                            "description": "Name of the day to count (e.g., 'monday', 'tuesday', etc.). If not specified or invalid, returns empty string",
+                            "enum": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", ""]
                         }
                     },
-                    "required": ["input_file", "output_file"]
+                    "required": ["input_file", "output_file", "day_to_count"]
                 }
             },
             {
@@ -94,11 +99,11 @@ async def identify_task(task: str) -> dict:
                     "properties": {
                         "input_file": {
                             "type": "string",
-                            "description": "Path to input contacts JSON"
+                            "description": "Path to input contacts JSON."
                         },
                         "output_file": {
                             "type": "string",
-                            "description": "Path to output sorted JSON"
+                            "description": "Path to output sorted JSON. If not specified or invalid or without extension, returns empty string"
                         }
                     },
                     "required": ["input_file", "output_file"]
@@ -112,11 +117,11 @@ async def identify_task(task: str) -> dict:
                     "properties": {
                         "logs_directory": {
                             "type": "string",
-                            "description": "Directory containing log files"
+                            "description": "Directory containing log files."
                         },
                         "output_file": {
                             "type": "string",
-                            "description": "Path to output file"
+                            "description": "Path to output file. If not specified or invalid or without extension, returns empty string"
                         }
                     },
                     "required": ["logs_directory", "output_file"]
@@ -296,7 +301,110 @@ async def run_datagen(script_path: str, email: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+def count_specific_day(input_file_path: str, output_file_path: str, day_name: str):
+
+    if "data" not in output_file_path:
+        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
+    if day_name == "" or not day_name:
+        raise HTTPException(status_code=400, detail=f"Invalid day") 
+
+    day_mapping = {
+        'monday': 0,
+        'tuesday': 1,
+        'wednesday': 2,
+        'thursday': 3,
+        'friday': 4,
+        'saturday': 5,
+        'sunday': 6
+    }
     
+    # Validate input
+    day_name = day_name.lower()
+    if day_name not in day_mapping:
+        raise HTTPException(status_code=400, 
+                detail="Bad Request response: Invalid day")
+
+    try:
+        with open(input_file_path, 'r') as f:
+            dates = f.readlines()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found at {input_file_path}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid input file '{input_file_path}': {str(e)}")
+    
+    day_count = sum(1 for date in dates 
+                    if datetime.strptime(date.strip(), '%Y-%m-%d').weekday() == day_mapping[day_name])
+    
+    output_file = output_file_path
+    with open(output_file, 'a') as f:
+        f.write(str(day_count)+ '\n')
+    
+    return {
+        "status": "success",
+        "message": f"updated file: {output_file}",
+    }
+
+def sort_contacts(input_file_path: str, output_file_path):
+    if output_file_path == "" or not output_file_path:
+        raise HTTPException(status_code=400, detail=f"invalid output filename") 
+    if "data" not in input_file_path:
+        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
+    
+    if "data" not in output_file_path:
+        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
+
+    try:
+        with open(input_file_path, 'r') as f:
+            contacts = json.load(f)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found at {input_file_path}")
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON in file '{input_file_path}': {str(e)}")
+
+    sorted_contacts = sorted(contacts, 
+                           key=lambda x: (x['last_name'], x['first_name']))
+    
+    with open(output_file_path, 'a') as f:
+        if f.tell() != 0:
+            f.write('\n')
+        json.dump(sorted_contacts, f, indent=2)
+
+def get_recent_logs(input_file_path: str, output_file_path: str):
+
+    if output_file_path == "" or not output_file_path:
+        raise HTTPException(status_code=400, detail=f"invalid output filename") 
+
+    if not os.path.exists(input_file_path):
+        raise HTTPException(status_code=404, detail=f"Logs directory {input_file_path} not found")
+
+    try:
+        log_files = glob.glob(os.path.join(input_file_path, '*.log'))       
+        if not log_files:
+            raise HTTPException(status_code=404, detail="No .log files found in /data/logs/")
+
+        recent_logs = sorted(log_files, 
+                           key=os.path.getmtime, 
+                           reverse=True)[:10]
+        
+        with open(output_file_path, 'w') as out:
+            for log in recent_logs:
+                try:
+                    with open(log, 'r') as f:
+                        first_line = f.readline().strip()
+                        out.write(f"{first_line}\n")
+                except IOError as e:
+                    print(f"Error reading file {log}: {str(e)}")
+                except UnicodeDecodeError as e:
+                    print(f"Error decoding file {log}: {str(e)}")
+
+    except IOError as e:
+        raise HTTPException(status_code=500, 
+                          detail=f"Error writing to output file: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, 
+                          detail=f"Unexpected error: {str(e)}")
+
 async def format_markdown(file_path: str, library: str, version: str):
     try:
         if "data" not in file_path:
