@@ -251,7 +251,7 @@ async def identify_task(task: str) -> dict:
 
 
     except httpx.HTTPStatusError as http_err:
-        raise HTTPException(status_code=http_err.response.status_code, 
+        raise HTTPException(status_code=500, 
                           detail=f"HTTP error occurred: {http_err}")
     except Exception as err:
         raise HTTPException(status_code=500, 
@@ -509,6 +509,53 @@ async def create_markdown_index(docs_directory: str, output_file_path):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+async def extract_email_sender(input_file_path: str, output_file_path):
+    if output_file_path == "" or not output_file_path:
+        raise HTTPException(status_code=400, detail=f"invalid output filename") 
+    if "data" not in input_file_path:
+        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
+    
+    if "data" not in output_file_path:
+        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
+
+    if os.path.exists(output_file_path) and os.path.getsize(output_file_path) > 0:
+        raise HTTPException(status_code=400, detail="Overwritting file is not allowed. use a differnt name for output file")   
+
+    try:
+        with open(input_file_path, 'r') as file:
+            email_content = file.read()
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        messages=[
+                {"role": "system", "content": "You are a helpful assistant that can extract sender's email address, from the given email"},
+                {"role": "user", "content": email_content}
+        ]
+
+        payload = {
+            "model": "o3-mini",
+            "messages": messages
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url=url, json=payload, headers=headers, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            sender_email = data['choices'][0]['message'].get('content')        
+            with open(output_file_path, 'w') as file:
+               file.write(sender_email)
+        
+    except httpx.HTTPStatusError as http_err:
+        raise HTTPException(status_code=500, 
+                          detail=f"HTTP error occurred: {http_err}")   
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="")   
 
 async def calculate_gold_ticket_sales(db_file_path: str, output_file_path):
 
