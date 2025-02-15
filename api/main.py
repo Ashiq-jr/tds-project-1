@@ -17,7 +17,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["*"],    
     allow_headers=["*"],
 )
 
@@ -406,6 +406,12 @@ async def get_recent_logs(logs_directory: str, output_file_path: str):
 
     if output_file_path == "" or not output_file_path:
         raise HTTPException(status_code=400, detail=f"invalid output filename") 
+    
+    if "data" not in output_file_path:
+        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
+    
+    if "data" not in logs_directory:
+        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
 
     if not os.path.exists(logs_directory):
         raise HTTPException(status_code=404, detail=f"Logs directory {logs_directory} not found")
@@ -466,35 +472,88 @@ async def format_markdown(file_path: str, library: str, version: str):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 async def create_markdown_index(docs_directory: str, output_file_path):
-    docs_path = Path(docs_directory)
-    index = {}
+
+    if "data" not in output_file_path:
+        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
     
-    for md_file in docs_path.glob('**/*.md'):
-        relative_path = str(md_file.relative_to(docs_path))
-        with open(md_file, 'r') as f:
-            content = f.read()
-            h1_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
-            if h1_match:
-                index[relative_path] = h1_match.group(1)
+    if output_file_path == "" or not output_file_path:
+        raise HTTPException(status_code=400, detail=f"invalid output filename")
     
-    with open(output_file_path, 'w') as f:
-        json.dump(index, f)
+    if os.path.exists(output_file_path) and os.path.getsize(output_file_path) > 0:
+        raise HTTPException(status_code=400, detail="Overwritting file is not allowed. use a differnt name for output file")
+    
+    if "data" not in docs_directory:
+        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
+
+    if not os.path.exists(docs_directory):
+        raise HTTPException(status_code=404, detail=f"Docs directory {docs_directory} not found")
+    
+    try:
+        docs_path = Path(docs_directory)
+        index = {}
+        
+        for md_file in docs_path.glob('**/*.md'):
+            relative_path = str(md_file.relative_to(docs_path))
+            with open(md_file, 'r') as f:
+                content = f.read()
+                h1_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
+                if h1_match:
+                    index[relative_path] = h1_match.group(1)
+        
+        with open(output_file_path, 'w') as f:
+            json.dump(index, f)
+        return {
+            "status": "success",
+            "message": f"updated file: {output_file_path}",
+        } 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 
 async def calculate_gold_ticket_sales(db_file_path: str, output_file_path):
-    conn = sqlite3.connect(db_file_path)
-    cursor = conn.cursor()
+
+    if "data" not in db_file_path:
+        raise HTTPException(status_code=400, detail=f"not configured to process files outside '/data'")
     
-    cursor.execute("""
-        SELECT SUM(units * price)
-        FROM tickets
-        WHERE type = 'Gold'
-    """)
+    if "data" not in output_file_path:
+        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
     
-    total = cursor.fetchone()[0]
-    conn.close()
+    if output_file_path == "" or not output_file_path:
+        raise HTTPException(status_code=400, detail=f"invalid output filename")
     
-    with open(output_file_path, 'w') as f:
-        f.write(str(total))
+    if os.path.exists(output_file_path) and os.path.getsize(output_file_path) > 0:
+        raise HTTPException(status_code=400, detail="Overwritting file is not allowed. use a differnt name for output file")
+    
+    try:
+        conn = sqlite3.connect(db_file_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT SUM(units * price)
+            FROM tickets
+            WHERE type = 'Gold'
+        """)
+        
+        total = cursor.fetchone()[0] 
+        total = total if total is not None else 0
+
+        with open(output_file_path, 'w') as f:
+            f.write(str(total))
+
+        return {
+            "status": "success",
+            "message": f"updated file: {output_file_path}",
+        }     
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, 
+                          detail=f"Internal server error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, 
+                          detail=f"Internal server error: {str(e)}")
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
+
 
 def run_command(command):
     try:
@@ -520,7 +579,6 @@ async def run_task(task: str):
     except HTTPException as e:
         raise e
     except Exception as e:
-
         raise HTTPException(status_code=500, 
                           detail=f"Internal server error: {str(e)}")
 
