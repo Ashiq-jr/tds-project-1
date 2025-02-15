@@ -160,7 +160,7 @@ async def identify_task(task: str) -> dict:
                         },
                         "output_file_path": {
                             "type": "string",
-                            "description": "Path to output email address file"
+                            "description": "Path to output email address file. If not specified or invalid or without extension, returns empty string"
                         }
                     },
                     "required": ["input_file_path", "output_file_path"]
@@ -366,7 +366,7 @@ async def count_specific_day(input_file_path: str, output_file_path: str, day_to
     
     return {
         "status": "success",
-        "message": f"updated file: {output_file_path}",
+        "message": f"file created at: {output_file_path}",
     }
 
 async def sort_contacts(input_file_path: str, output_file_path):
@@ -399,7 +399,7 @@ async def sort_contacts(input_file_path: str, output_file_path):
 
     return {
         "status": "success",
-        "message": f"updated file: {output_file_path}",
+        "message": f"file created at: {output_file_path}",
     }
 
 async def get_recent_logs(logs_directory: str, output_file_path: str):
@@ -436,7 +436,7 @@ async def get_recent_logs(logs_directory: str, output_file_path: str):
                         out.write(f"{first_line}\n")
                         return {
                             "status": "success",
-                            "message": f"updated file: {output_file_path}",
+                            "message": f"file created at: {output_file_path}",
                         }
                 except IOError as e:
                     print(f"Error reading file {log}: {str(e)}")
@@ -504,12 +504,13 @@ async def create_markdown_index(docs_directory: str, output_file_path):
             json.dump(index, f)
         return {
             "status": "success",
-            "message": f"updated file: {output_file_path}",
+            "message": f"file created at: {output_file_path}",
         } 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 async def extract_email_sender(input_file_path: str, output_file_path):
+
     if output_file_path == "" or not output_file_path:
         raise HTTPException(status_code=400, detail=f"invalid output filename") 
     if "data" not in input_file_path:
@@ -531,7 +532,7 @@ async def extract_email_sender(input_file_path: str, output_file_path):
         }
 
         messages=[
-                {"role": "system", "content": "You are a helpful assistant that can extract sender's email address, from the given email"},
+                {"role": "system", "content": "You are a helpful assistant. extract only the sender/from email address(eg., name@xmail.com, yyyy@gmail.com), from the given email"},
                 {"role": "user", "content": email_content}
         ]
 
@@ -548,6 +549,11 @@ async def extract_email_sender(input_file_path: str, output_file_path):
             sender_email = data['choices'][0]['message'].get('content')        
             with open(output_file_path, 'w') as file:
                file.write(sender_email)
+
+            return {
+            "status": "success",
+            "message": f"file created at: {output_file_path}",
+        } 
         
     except httpx.HTTPStatusError as http_err:
         raise HTTPException(status_code=500, 
@@ -589,7 +595,7 @@ async def calculate_gold_ticket_sales(db_file_path: str, output_file_path):
 
         return {
             "status": "success",
-            "message": f"updated file: {output_file_path}",
+            "message": f"file created at: {output_file_path}",
         }     
     except sqlite3.Error as e:
         raise HTTPException(status_code=500, 
