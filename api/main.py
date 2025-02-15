@@ -2,7 +2,6 @@ import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
-import asyncio
 import subprocess
 import sys
 import os
@@ -19,11 +18,10 @@ app.add_middleware(
 
 url = "https://llmfoundry.straive.com/openai/v1/chat/completions"
 
-os.environ["AIPROXY_TOKEN"] = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6Im1vaGFtZWRhc2hpcS5zeWVkbXVzdGFmYUBzdHJhaXZlLmNvbSJ9.aHWrV2TkUpXO3ArJbtWqUqlN-bFZtWNuFmSJETTULAg"
 api_key = os.getenv("AIPROXY_TOKEN")
 
-with open('prompt.txt', 'r') as file:
-    prompt = file.read()
+# with open('prompt.txt', 'r') as file:
+#     prompt = file.read()
 
 async def identify_task(task: str) -> dict:
     try:
@@ -326,15 +324,26 @@ async def run_datagen(script_path: str, email: str):
     
 async def format_markdown(file_path: str, library: str, version: str):
     try:
-        file_path = f".{file_path}"
+        if "data" not in file_path:
+            raise HTTPException(status_code=400, detail=f"not configured to process files outside '/data'")
+        
+
+        normalized_filePath = file_path.lstrip("/")
+        if not normalized_filePath.startswith("./"):
+            normalized_filePath = "./" + normalized_filePath
+        
+        if not os.path.exists(normalized_filePath):
+            raise HTTPException(status_code=400, detail=f"file not found")
+              
+        #file_path = f".{file_path}"
         if library == "" or not library:
             raise HTTPException(status_code=400, detail=f"Error formatting file: library not provided")
        
         library_with_version = f"{library}@{version}"
 
         os.system(f"npm install {library_with_version}")
-        os.system(f"npx {library_with_version} --check {file_path}")
-        os.system(f"npx {library_with_version} --write {file_path}")
+        os.system(f"npx {library_with_version} --check {normalized_filePath}")
+        os.system(f"npx {library_with_version} --write {normalized_filePath}")
         
         return {
             "status": "success",
@@ -377,4 +386,4 @@ async def read_file(path: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
