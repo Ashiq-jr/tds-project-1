@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime
 import glob
 import json
 from fastapi import FastAPI, HTTPException
@@ -74,11 +74,11 @@ async def identify_task(task: str) -> dict:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "input_file": {
+                        "input_file_path": {
                             "type": "string",
                             "description": "Path to input dates file"
                         },
-                        "output_file": {
+                        "output_file_path": {
                             "type": "string",
                             "description": "Path to output count file"
                         },
@@ -88,7 +88,7 @@ async def identify_task(task: str) -> dict:
                             "enum": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", ""]
                         }
                     },
-                    "required": ["input_file", "output_file", "day_to_count"]
+                    "required": ["input_file_path", "output_file_path", "day_to_count"]
                 }
             },
             {
@@ -97,16 +97,16 @@ async def identify_task(task: str) -> dict:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "input_file": {
+                        "input_file_path": {
                             "type": "string",
                             "description": "Path to input contacts JSON."
                         },
-                        "output_file": {
+                        "output_file_path": {
                             "type": "string",
                             "description": "Path to output sorted JSON. If not specified or invalid or without extension, returns empty string"
                         }
                     },
-                    "required": ["input_file", "output_file"]
+                    "required": ["input_file_path", "output_file_path"]
                 }
             },
             {
@@ -119,12 +119,12 @@ async def identify_task(task: str) -> dict:
                             "type": "string",
                             "description": "Directory containing log files."
                         },
-                        "output_file": {
+                        "output_file_path": {
                             "type": "string",
                             "description": "Path to output file. If not specified or invalid or without extension, returns empty string"
                         }
                     },
-                    "required": ["logs_directory", "output_file"]
+                    "required": ["logs_directory", "output_file_path"]
                 }
             },
             {
@@ -302,12 +302,34 @@ async def run_datagen(script_path: str, email: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-def count_specific_day(input_file_path: str, output_file_path: str, day_name: str):
+def parse_date(date_str):
+    date_formats = [
+        "%Y-%m-%d",
+        "%b %d, %Y",
+        "%d-%b-%Y",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d",
+        "%b %d, %Y %H:%M:%S",
+        "%d-%b-%Y %H:%M:%S",
+        "%b-%d-%Y"
+    ]
+    for fmt in date_formats:
+        try:
+            return datetime.strptime(date_str.strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+async def count_specific_day(input_file_path: str, output_file_path: str, day_to_count: str):
 
     if "data" not in output_file_path:
         raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
-    if day_name == "" or not day_name:
+    if day_to_count == "" or not day_to_count:
         raise HTTPException(status_code=400, detail=f"Invalid day") 
+
+    if os.path.exists(output_file_path) and os.path.getsize(output_file_path) > 0:
+        raise HTTPException(status_code=400, detail="Overwritting file is not allowed. use a differnt name for output file")
 
     day_mapping = {
         'monday': 0,
@@ -320,8 +342,8 @@ def count_specific_day(input_file_path: str, output_file_path: str, day_name: st
     }
     
     # Validate input
-    day_name = day_name.lower()
-    if day_name not in day_mapping:
+    day_to_count = day_to_count.lower()
+    if day_to_count not in day_mapping:
         raise HTTPException(status_code=400, 
                 detail="Bad Request response: Invalid day")
 
@@ -333,19 +355,18 @@ def count_specific_day(input_file_path: str, output_file_path: str, day_name: st
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid input file '{input_file_path}': {str(e)}")
     
-    day_count = sum(1 for date in dates 
-                    if datetime.strptime(date.strip(), '%Y-%m-%d').weekday() == day_mapping[day_name])
+    day_count = sum(1 for date in dates if (parsed_date := parse_date(date)) and parsed_date.weekday() == day_mapping[day_to_count])
+
     
-    output_file = output_file_path
-    with open(output_file, 'a') as f:
-        f.write(str(day_count)+ '\n')
+    with open(output_file_path, 'w') as f:
+        f.write(str(day_count))
     
     return {
         "status": "success",
-        "message": f"updated file: {output_file}",
+        "message": f"updated file: {output_file_path}",
     }
 
-def sort_contacts(input_file_path: str, output_file_path):
+async def sort_contacts(input_file_path: str, output_file_path):
     if output_file_path == "" or not output_file_path:
         raise HTTPException(status_code=400, detail=f"invalid output filename") 
     if "data" not in input_file_path:
@@ -353,6 +374,9 @@ def sort_contacts(input_file_path: str, output_file_path):
     
     if "data" not in output_file_path:
         raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
+
+    if os.path.exists(output_file_path) and os.path.getsize(output_file_path) > 0:
+        raise HTTPException(status_code=400, detail="Overwritting file is not allowed. use a differnt name for output file")    
 
     try:
         with open(input_file_path, 'r') as f:
@@ -365,23 +389,31 @@ def sort_contacts(input_file_path: str, output_file_path):
     sorted_contacts = sorted(contacts, 
                            key=lambda x: (x['last_name'], x['first_name']))
     
-    with open(output_file_path, 'a') as f:
+    with open(output_file_path, 'w') as f:
         if f.tell() != 0:
-            f.write('\n')
-        json.dump(sorted_contacts, f, indent=2)
+            raise HTTPException(status_code=400, detail="Overwritting file is not allowed. use a differnt name for output file")
+        json.dump(sorted_contacts, f)
 
-def get_recent_logs(input_file_path: str, output_file_path: str):
+    return {
+        "status": "success",
+        "message": f"updated file: {output_file_path}",
+    }
+
+async def get_recent_logs(logs_directory: str, output_file_path: str):
 
     if output_file_path == "" or not output_file_path:
         raise HTTPException(status_code=400, detail=f"invalid output filename") 
 
-    if not os.path.exists(input_file_path):
-        raise HTTPException(status_code=404, detail=f"Logs directory {input_file_path} not found")
+    if not os.path.exists(logs_directory):
+        raise HTTPException(status_code=404, detail=f"Logs directory {logs_directory} not found")
+    
+    if os.path.exists(output_file_path) and os.path.getsize(output_file_path) > 0:
+        raise HTTPException(status_code=400, detail="Overwritting file is not allowed. use a differnt name for output file")
 
     try:
-        log_files = glob.glob(os.path.join(input_file_path, '*.log'))       
+        log_files = glob.glob(os.path.join(logs_directory, '*.log'))       
         if not log_files:
-            raise HTTPException(status_code=404, detail="No .log files found in /data/logs/")
+            raise HTTPException(status_code=404, detail=f"No .log files found in {logs_directory}")
 
         recent_logs = sorted(log_files, 
                            key=os.path.getmtime, 
@@ -393,6 +425,10 @@ def get_recent_logs(input_file_path: str, output_file_path: str):
                     with open(log, 'r') as f:
                         first_line = f.readline().strip()
                         out.write(f"{first_line}\n")
+                        return {
+                            "status": "success",
+                            "message": f"updated file: {output_file_path}",
+                        }
                 except IOError as e:
                     print(f"Error reading file {log}: {str(e)}")
                 except UnicodeDecodeError as e:
@@ -450,6 +486,7 @@ async def run_task(task: str):
     except HTTPException as e:
         raise e
     except Exception as e:
+
         raise HTTPException(status_code=500, 
                           detail=f"Internal server error: {str(e)}")
 
