@@ -154,16 +154,16 @@ async def identify_task(task: str) -> dict:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "input_file": {
+                        "input_file_path": {
                             "type": "string",
                             "description": "Path to email content file"
                         },
-                        "output_file": {
+                        "output_file_path": {
                             "type": "string",
                             "description": "Path to output email address file"
                         }
                     },
-                    "required": ["input_file", "output_file"]
+                    "required": ["input_file_path", "output_file_path"]
                 }
             },
             {
