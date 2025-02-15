@@ -25,31 +25,6 @@ api_key = os.getenv("AIPROXY_TOKEN")
 
 async def identify_task(task: str) -> dict:
     try:
-
-        response_format = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "code_response",
-                "strict": True,
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "requirements": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            }
-                        },
-                        "code": {
-                            "type": "string"
-                        }
-                    },
-                    "required": ["requirements", "code"],
-                    "additionalProperties": False
-                }
-            }
-        }
-
         functions = [
             {
                 "name": "run_datagen",
@@ -245,7 +220,7 @@ async def identify_task(task: str) -> dict:
         }
 
         messages=[
-                {"role": "system", "content": "You are a helpful assistant that processes user queries and maps them to appropriate function calls."},
+                {"role": "system", "content": "You are a helpful assistant that translates user queries into english, if the query is not in english and processes user queries and maps them to appropriate function calls."},
                 {"role": "user", "content": task}
         ]
 
@@ -327,23 +302,14 @@ async def format_markdown(file_path: str, library: str, version: str):
         if "data" not in file_path:
             raise HTTPException(status_code=400, detail=f"not configured to process files outside '/data'")
         
-
-        normalized_filePath = file_path.lstrip("/")
-        if not normalized_filePath.startswith("./"):
-            normalized_filePath = "./" + normalized_filePath
-        
-        if not os.path.exists(normalized_filePath):
-            raise HTTPException(status_code=400, detail=f"file not found")
-              
-        #file_path = f".{file_path}"
         if library == "" or not library:
             raise HTTPException(status_code=400, detail=f"Error formatting file: library not provided")
        
         library_with_version = f"{library}@{version}"
 
-        os.system(f"npm install {library_with_version}")
-        os.system(f"npx {library_with_version} --check {normalized_filePath}")
-        os.system(f"npx {library_with_version} --write {normalized_filePath}")
+        run_command(f"npm install {library_with_version}")
+        run_command(f"npx {library_with_version} --check {file_path}")
+        run_command(f"npx {library_with_version} --write {file_path}")
         
         return {
             "status": "success",
@@ -351,7 +317,15 @@ async def format_markdown(file_path: str, library: str, version: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
+    
+def run_command(command):
+    try:
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"Error: {result.stderr}")
+        return result.stdout
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/run")
 async def run_task(task: str):
@@ -362,7 +336,7 @@ async def run_task(task: str):
         func = globals().get(function_name)
         if not func or not callable(func):
             raise HTTPException(status_code=400, 
-                            detail=f"Bad Request response: {str(e)}")
+                            detail="Bad Request response: undefined function")
         result = await func(**function_args)
         return result
     except HTTPException as e:
@@ -373,16 +347,18 @@ async def run_task(task: str):
 
 @app.get("/read")
 async def read_file(path: str):
+    full_path = os.path.abspath(path)
+    print(f"Requested path: {path}")
+    print(f"Absolute path exists: {os.path.exists(full_path)}, {full_path}")
+    
     try:
-        with open(path, "r") as f:
-            content = f.read()
-        return {"status": "success", "content": content}
+        with open(full_path, "r") as f:
+            return f.read()
     except FileNotFoundError:
-        raise HTTPException(status_code=404, 
-                          detail="File not found")
+        raise HTTPException(status_code=404, detail="")
     except Exception as e:
-        raise HTTPException(status_code=500, 
-                          detail=f"Error reading file: {str(e)}")
+        raise HTTPException(status_code=500, detail="")
+
 
 if __name__ == "__main__":
     import uvicorn
