@@ -1,10 +1,12 @@
 import asyncio
+import base64
 from datetime import datetime
 import glob
 import json
 from pathlib import Path
 import re
 import sqlite3
+from typing import List
 import aiofiles
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +14,6 @@ import httpx
 import subprocess
 import sys
 import os
-from typing import Optional
 
 app = FastAPI()
 app.add_middleware(
@@ -23,9 +24,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-url = "https://llmfoundry.straive.com/openai/v1/chat/completions"
-
 api_key = os.getenv("AIPROXY_TOKEN")
+
+headers = {
+    "Authorization": f"Bearer {api_key}",
+    "Content-Type": "application/json"
+}
+
+url = "https://llmfoundry.straive.com/openai/v1/chat/completions"
 
 BASE_DIR = Path("/data").resolve()
 
@@ -42,19 +48,14 @@ def validate_path(file_path: str) -> bool:
     return BASE_DIR in resolved_path.parents
 
 def is_directory_exists(directory_path: str) -> bool:
-    return os.path.isdir(directory_path)
+    return os.path.exists(Path(directory_path).resolve())
 
 async def identify_task(task: str) -> dict:
     try:
 
-        async with aiofiles.open("./functions.txt", 'r') as f:
+        async with aiofiles.open("/app/functions.txt", 'r') as f:
             content = await f.read()
         functions = json.loads(content)
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
 
         messages=[
                 {"role": "system", "content": "You are a helpful assistant that translates user queries into english, if the query is not in english and processes user queries and maps them to appropriate function calls."},
@@ -295,17 +296,21 @@ async def get_recent_logs(logs_directory: str, output_file_path: str):
 
 async def format_markdown(file_path: str, library: str, version: str):
     try:
-        if "data" not in file_path:
+        is_valid_input_file = await is_file_empty_or_nonexistent(file_path)
+        if is_valid_input_file:
+            raise HTTPException(status_code=400, detail=f"Inavlid input file")
+
+        if not validate_path(file_path):
             raise HTTPException(status_code=400, detail=f"not configured to process files outside '/data'")
         
-        if library == "" or not library:
+        if not library:
             raise HTTPException(status_code=400, detail=f"Error formatting file: library not provided")
        
         library_with_version = f"{library}@{version}"
 
-        run_command(f"npm install {library_with_version}")
-        run_command(f"npx {library_with_version} --check {file_path}")
-        run_command(f"npx {library_with_version} --write {file_path}")
+        await run_command(f"npm install {library_with_version}")
+        await run_command(f"npx {library_with_version} --check {file_path}")
+        await run_command(f"npx {library_with_version} --write {file_path}")
         
         return {
             "status": "success",
@@ -316,63 +321,64 @@ async def format_markdown(file_path: str, library: str, version: str):
 
 async def create_markdown_index(docs_directory: str, output_file_path):
 
-    if "data" not in output_file_path:
-        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
-    
-    if output_file_path == "" or not output_file_path:
+    if not output_file_path:
         raise HTTPException(status_code=400, detail=f"invalid output filename")
     
-    if os.path.exists(output_file_path) and os.path.getsize(output_file_path) > 0:
-        raise HTTPException(status_code=400, detail="Overwritting file is not allowed. use a differnt name for output file")
-    
-    if "data" not in docs_directory:
+    if not validate_path(docs_directory) or not validate_path(output_file_path):
         raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
+    
+    is_valid_output_file = await is_file_empty_or_nonexistent(output_file_path)
 
-    if not os.path.exists(docs_directory):
+    if not is_valid_output_file :
+        raise HTTPException(status_code=400, detail="Overwriting file is not allowed. Use a different name for the output file")
+
+    if not is_directory_exists(docs_directory):
         raise HTTPException(status_code=404, detail=f"Docs directory {docs_directory} not found")
     
     try:
         docs_path = Path(docs_directory)
         index = {}
         
-        for md_file in docs_path.glob('**/*.md'):
-            relative_path = str(md_file.relative_to(docs_path))
-            with open(md_file, 'r') as f:
-                content = f.read()
-                h1_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
-                if h1_match:
-                    index[relative_path] = h1_match.group(1)
+        md_files = await asyncio.to_thread(lambda: list(docs_path.glob('**/*.md')))
         
-        with open(output_file_path, 'w') as f:
-            json.dump(index, f)
+        for md_file in md_files:
+            relative_path = str(md_file.relative_to(docs_path))
+            async with aiofiles.open(md_file, 'r') as f:
+                content = await f.read()
+            
+            h1_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
+            if h1_match:
+                index[relative_path] = h1_match.group(1)
+        
+        async with aiofiles.open(output_file_path, 'w') as f:
+            await f.write(json.dumps(index))
+        
         return {
             "status": "success",
-            "message": f"file created at: {output_file_path}",
-        } 
+            "message": f"File created at: {output_file_path}",
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 async def extract_email_sender(input_file_path: str, output_file_path):
 
-    if output_file_path == "" or not output_file_path:
+    if not output_file_path:
         raise HTTPException(status_code=400, detail=f"invalid output filename") 
-    if "data" not in input_file_path:
-        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
     
-    if "data" not in output_file_path:
+    if not validate_path(input_file_path) or not validate_path(output_file_path):
         raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
 
-    if os.path.exists(output_file_path) and os.path.getsize(output_file_path) > 0:
-        raise HTTPException(status_code=400, detail="Overwritting file is not allowed. use a differnt name for output file")   
+    is_valid_output_file = await is_file_empty_or_nonexistent(output_file_path)
+
+    if not is_valid_output_file :
+        raise HTTPException(status_code=400, detail="Overwriting file is not allowed. Use a different name for the output file") 
 
     try:
-        with open(input_file_path, 'r') as file:
-            email_content = file.read()
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
+        async with aiofiles.open(input_file_path, 'r') as file:
+            try:
+                email_content = await file.read()
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail=f"File not found at {input_file_path}")
 
         messages=[
                 {"role": "system", "content": "You are a helpful assistant. extract only the sender/from email address(eg., name@xmail.com, yyyy@gmail.com), from the given email"},
@@ -390,8 +396,8 @@ async def extract_email_sender(input_file_path: str, output_file_path):
             data = response.json()
 
             sender_email = data['choices'][0]['message'].get('content')        
-            with open(output_file_path, 'w') as file:
-               file.write(sender_email)
+            async with aiofiles.open(output_file_path, 'w') as file:
+               await file.write(sender_email)
 
             return {
             "status": "success",
@@ -408,33 +414,22 @@ async def extract_email_sender(input_file_path: str, output_file_path):
 
 async def calculate_gold_ticket_sales(db_file_path: str, output_file_path):
 
-    if "data" not in db_file_path:
-        raise HTTPException(status_code=400, detail=f"not configured to process files outside '/data'")
-    
-    if "data" not in output_file_path:
-        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
-    
-    if output_file_path == "" or not output_file_path:
+    if not output_file_path:
         raise HTTPException(status_code=400, detail=f"invalid output filename")
     
-    if os.path.exists(output_file_path) and os.path.getsize(output_file_path) > 0:
-        raise HTTPException(status_code=400, detail="Overwritting file is not allowed. use a differnt name for output file")
+    if not validate_path(db_file_path) or not validate_path(output_file_path):
+        raise HTTPException(status_code=400, detail=f"not configured to process files outside '/data'")
+          
+    is_valid_output_file = await is_file_empty_or_nonexistent(output_file_path)
+
+    if not is_valid_output_file :
+        raise HTTPException(status_code=400, detail="Overwriting file is not allowed. Use a different name for the output file") 
     
     try:
-        conn = sqlite3.connect(db_file_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT SUM(units * price)
-            FROM tickets
-            WHERE type = 'Gold'
-        """)
-        
-        total = cursor.fetchone()[0] 
-        total = total if total is not None else 0
+        total = await asyncio.to_thread(query_total, db_file_path)
 
-        with open(output_file_path, 'w') as f:
-            f.write(str(total))
+        async with aiofiles.open(output_file_path, 'w') as f:
+            await f.write(str(total))
 
         return {
             "status": "success",
@@ -446,17 +441,181 @@ async def calculate_gold_ticket_sales(db_file_path: str, output_file_path):
     except Exception as e:
         raise HTTPException(status_code=500, 
                           detail=f"Internal server error: {str(e)}")
+
+def query_total(db_file_path: str) -> float:
+    try:
+        conn = sqlite3.connect(db_file_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT SUM(units * price)
+            FROM tickets
+            WHERE type = 'Gold'
+        """)
+        result = cursor.fetchone()[0]
+        total = result if result is not None else 0
+        return total
     finally:
-        if 'conn' in locals() and conn:
+        if conn:
             conn.close()
 
+async def extract_card_number(image_file_path: str, output_file_path):
 
-def run_command(command):
+    if not output_file_path:
+        raise HTTPException(status_code=400, detail=f"invalid output filename")
+    
+    if not validate_path(image_file_path) or not validate_path(output_file_path):
+        raise HTTPException(status_code=400, detail=f"not configured to process files outside '/data'")
+          
+    is_valid_output_file = await is_file_empty_or_nonexistent(output_file_path)
+
+    if not is_valid_output_file :
+        raise HTTPException(status_code=400, detail="Overwriting file is not allowed. Use a different name for the output file") 
+    
+    try :
+        ocr_url = "https://llmfoundry.straive.com/gemini/v1beta/models/gemini-2.0-flash-001:streamGenerateContent?alt=sse"
+
+        async with aiofiles.open(image_file_path, "rb") as f:
+            try: 
+                image_bytes = await f.read()
+                encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail=f"File not found at {image_file_path}")
+            except Exception as e:
+                raise HTTPException(status_code=400, 
+                            detail="Bad Request response: corrupt image")
+
+        messages = {
+            "system_instruction": {
+                "parts": [
+                    {
+                        "text": "you are a ocr specialist"
+                    }
+                ]
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "inline_data": {
+                                "mime_type": "image/png",
+                                "data": encoded_image
+                            }
+                        },
+                        {
+                            "text": "extract card number from this image"
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0
+            }
+        }
+
+        card_number = ""
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url=ocr_url, json=messages, headers=headers, timeout=30)
+            response.raise_for_status() 
+            for line in response.iter_lines():
+                try:
+                    if line:
+                        json_string = line.replace("data: ", "")
+                        data = json.loads(json_string)
+                        text = data["candidates"][0]["content"]["parts"][0]["text"]
+                        card_number = card_number + text
+                except json.JSONDecodeError as e:
+                    raise HTTPException(status_code=500, 
+                          detail=f"An error occurred: {str(err)}")
+                
+        async with aiofiles.open(output_file_path, 'w') as f:
+            await f.write(str(card_number))
+
+        return {
+            "status": "success",
+            "message": f"file created at: {output_file_path}",
+        }
+        
+    except httpx.HTTPStatusError as http_err:
+        raise HTTPException(status_code=500, 
+                          detail=f"HTTP error occurred: {http_err}")
+    except Exception as err:
+        raise HTTPException(status_code=500, 
+                          detail=f"An error occurred: {str(err)}")
+
+# async def find_similar_comments(input_file_path: str, output_file_path):
+    # if not output_file_path:
+    #     raise HTTPException(status_code=400, detail=f"invalid output filename") 
+    
+    # if not validate_path(input_file_path) or not validate_path(output_file_path):
+    #     raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
+
+    # is_valid_output_file = await is_file_empty_or_nonexistent(output_file_path)
+
+    # if not is_valid_output_file :
+    #     raise HTTPException(status_code=400, detail="Overwriting file is not allowed. Use a different name for the output file")
+    # try:
+    #     async with aiofiles.open(input_file_path, mode='r') as f:
+    #         try:
+    #             lines = await f.readlines()
+    #         except Exception as e:
+    #             raise HTTPException(status_code=400, detail=f"invalid input filename")           
+    #     comments = [line.strip() for line in lines if line.strip()]
+        
+    #     if len(comments) < 2:
+    #         raise HTTPException(status_code=400, detail=f"Need at least two comments to find a similar pair.")
+        
+    #     # tasks = [get_embedding(comment) for comment in comments]
+    #     # embeddings = await asyncio.gather(*tasks)
+    #     embeddings = await get_embeddings(comments)
+        
+        
+        # embeddings_np = np.array(embeddings)
+        
+        # sim_matrix = cosine_similarity(embeddings_np)
+        # np.fill_diagonal(sim_matrix, -np.inf)
+        
+        # idx1, idx2 = np.unravel_index(np.argmax(sim_matrix), sim_matrix.shape)
+        # most_similar_pair = [comments[idx1], comments[idx2]]
+        
+        # async with aiofiles.open(output_file_path, mode='w') as f:
+        #     for comment in most_similar_pair:
+        #         await f.write(comment + "\n")
+    
+    # except Exception as e:
+    #     raise Exception(f"Error processing request: {str(e)}")   
+
+# async def get_embeddings(comments: List[str]) -> List[float]:
     try:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"Error: {result.stderr}")
-        return result.stdout
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://llmfoundry.straive.com/openai/v1/embeddings",
+                json={
+                    "model": "text-embedding-3-small",
+                    "input": comments
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data["data"][0]["embedding"]
+    except httpx.HTTPStatusError as http_err:
+        raise HTTPException(status_code=500, 
+                          detail=f"HTTP error occurred: {http_err}")
+    except Exception as err:
+        raise HTTPException(status_code=500, 
+                          detail=f"An error occurred: {str(err)}")
+    
+async def run_command(command):
+    try:
+        process = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            print(f"Error: {stderr.decode()}")
+        return stdout.decode()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
@@ -471,6 +630,7 @@ async def run_task(task: str):
             raise HTTPException(status_code=400, 
                             detail="Bad Request response: undefined function")
         result = await func(**function_args)
+
         return result
     except HTTPException as e:
         raise e

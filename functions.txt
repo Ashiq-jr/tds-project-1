@@ -142,16 +142,16 @@
         "parameters": {
             "type": "object",
             "properties": {
-                "image_file": {
+                "image_file_path": {
                     "type": "string",
                     "description": "Path to credit card image"
                 },
-                "output_file": {
+                "output_file_path": {
                     "type": "string",
                     "description": "Path to output card number file"
                 }
             },
-            "required": ["image_file", "output_file"]
+            "required": ["image_file_path", "output_file_path"]
         }
     },
     {
@@ -160,16 +160,16 @@
         "parameters": {
             "type": "object",
             "properties": {
-                "input_file": {
+                "input_file_path": {
                     "type": "string",
                     "description": "Path to comments file"
                 },
-                "output_file": {
+                "output_file_path": {
                     "type": "string",
                     "description": "Path to output similar comments file"
                 }
             },
-            "required": ["input_file", "output_file"]
+            "required": ["input_file_path", "output_file_path"]
         }
     },
     {
