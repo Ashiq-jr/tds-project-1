@@ -189,5 +189,24 @@
             },
             "required": ["db_file_path", "output_file_path"]
         }
+    },
+    {
+        "name": "clone_git_repo",
+        "description": "Cloning git Repository and make a commit",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "repo_link": {
+                    "type": "string",
+                    "description": "Path to SQLite database file"
+                },
+                "clone_dir": {
+                    "type": "string",
+                    "description": "Path to clone the repo",
+                    "default": "/data/repo"
+                }
+            },
+            "required": ["repo_link", "clone_dir"]
+        }
     }
 ]  

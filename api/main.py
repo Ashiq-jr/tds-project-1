@@ -10,6 +10,7 @@ from typing import List
 import aiofiles
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 import httpx
 import subprocess
 import sys
@@ -32,6 +33,8 @@ headers = {
 }
 
 url = "https://llmfoundry.straive.com/openai/v1/chat/completions"
+ocr_url = "https://llmfoundry.straive.com/gemini/v1beta/models/gemini-2.0-flash-001:streamGenerateContent?alt=sse"
+
 
 BASE_DIR = Path("/data").resolve()
 
@@ -53,7 +56,7 @@ def is_directory_exists(directory_path: str) -> bool:
 async def identify_task(task: str) -> dict:
     try:
 
-        async with aiofiles.open("/app/functions.txt", 'r') as f:
+        async with aiofiles.open("./functions.txt", 'r') as f:
             content = await f.read()
         functions = json.loads(content)
 
@@ -86,35 +89,6 @@ async def identify_task(task: str) -> dict:
     except Exception as err:
         raise HTTPException(status_code=500, 
                           detail=f"An error occurred: {str(err)}")
-
-async def install_requirements(requirements: list):
-    try:
-        for req in requirements:
-            if req and req.strip():
-                subprocess.check_call([sys.executable, "-m", "pip", "install", req.strip()])
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, 
-                          detail=f"Failed to install requirements: {str(e)}")
-
-async def execute_code(code: str) -> str:
-    try:
-        with open("temp_code.py", "w") as f:
-            f.write(code)
-        
-        result = subprocess.run([sys.executable, "temp_code.py"], 
-                              capture_output=True, 
-                              text=True)
-        
-        os.remove("temp_code.py")
-        
-        if result.returncode != 0:
-            raise HTTPException(status_code=400, 
-                              detail=f"Task execution failed: {result.stderr}")
-        
-        return result.stdout
-    except Exception as e:
-        raise HTTPException(status_code=500, 
-                          detail=f"Code execution error: {str(e)}")
 
 async def run_datagen(script_path: str, email: str):
     try:
@@ -472,8 +446,6 @@ async def extract_card_number(image_file_path: str, output_file_path):
         raise HTTPException(status_code=400, detail="Overwriting file is not allowed. Use a different name for the output file") 
     
     try :
-        ocr_url = "https://llmfoundry.straive.com/gemini/v1beta/models/gemini-2.0-flash-001:streamGenerateContent?alt=sse"
-
         async with aiofiles.open(image_file_path, "rb") as f:
             try: 
                 image_bytes = await f.read()
@@ -605,6 +577,34 @@ async def extract_card_number(image_file_path: str, output_file_path):
         raise HTTPException(status_code=500, 
                           detail=f"An error occurred: {str(err)}")
     
+async def clone_git_repo(repo_link: str, clone_dir: str):
+
+    try:
+
+        if not validate_path(clone_dir):
+            raise HTTPException(status_code=400, detail=f"not configured to process files outside '/data'")
+    
+        clone_command = f"git clone {repo_link} {clone_dir}"
+        await run_command(clone_command)
+
+        readme_path = os.path.join(clone_dir, "README.md")
+        async with aiofiles.open(readme_path, "a") as f:
+            await f.write("\nAutomated commit from async script using subprocess.\n")
+
+        stage_command = f"cd {clone_dir} && git add README.md"
+        await run_command(stage_command)
+
+        commit_command = f"cd {clone_dir} && git commit -m 'Automated commit: updated README.md'"
+        await run_command(commit_command)
+
+        return {
+            "status": "success",
+            "message": f"cloned repo at: {clone_dir}",
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 async def run_command(command):
     try:
         process = await asyncio.create_subprocess_shell(
@@ -618,6 +618,7 @@ async def run_command(command):
         return stdout.decode()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 
 @app.post("/run")
 async def run_task(task: str):
@@ -638,15 +639,14 @@ async def run_task(task: str):
         raise HTTPException(status_code=500, 
                           detail=f"Internal server error: {str(e)}")
 
-@app.get("/read")
+@app.get("/read", response_class=PlainTextResponse)
 async def read_file(path: str):
     full_path = os.path.abspath(path)
-    print(f"Requested path: {path}")
-    print(f"Absolute path exists: {os.path.exists(full_path)}, {full_path}")
     
     try:
         async with aiofiles.open(full_path, mode="r") as f:
-            return await f.read()
+            content = await f.read()    
+        return PlainTextResponse(content)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="")
     except Exception as e:
@@ -655,4 +655,4 @@ async def read_file(path: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
