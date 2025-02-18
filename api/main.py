@@ -6,15 +6,14 @@ import json
 from pathlib import Path
 import re
 import sqlite3
-from typing import List
 import aiofiles
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 import httpx
-import subprocess
-import sys
 import os
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
 app = FastAPI()
 app.add_middleware(
@@ -32,7 +31,7 @@ headers = {
     "Content-Type": "application/json"
 }
 
-url = "https://llmfoundry.straive.com/openai/v1/chat/completions"
+url = "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
 ocr_url = "https://llmfoundry.straive.com/gemini/v1beta/models/gemini-2.0-flash-001:streamGenerateContent?alt=sse"
 
 
@@ -56,7 +55,7 @@ def is_directory_exists(directory_path: str) -> bool:
 async def identify_task(task: str) -> dict:
     try:
 
-        async with aiofiles.open("./functions.txt", 'r') as f:
+        async with aiofiles.open("/app/functions.txt", 'r') as f:
             content = await f.read()
         functions = json.loads(content)
 
@@ -66,7 +65,8 @@ async def identify_task(task: str) -> dict:
         ]
 
         payload = {
-            "model": "o3-mini",
+            # "model": "o3-mini",
+            "model": "gpt-4o-mini",
             "messages": messages,
             "functions": functions,
             "function_call": "auto"
@@ -316,7 +316,7 @@ async def create_markdown_index(docs_directory: str, output_file_path):
         md_files = await asyncio.to_thread(lambda: list(docs_path.glob('**/*.md')))
         
         for md_file in md_files:
-            relative_path = str(md_file.relative_to(docs_path))
+            relative_path = md_file.relative_to(docs_path).as_posix()
             async with aiofiles.open(md_file, 'r') as f:
                 content = await f.read()
             
@@ -360,7 +360,7 @@ async def extract_email_sender(input_file_path: str, output_file_path):
         ]
 
         payload = {
-            "model": "o3-mini",
+            "model": "gpt-4o-mini",
             "messages": messages
         }
 
@@ -515,53 +515,44 @@ async def extract_card_number(image_file_path: str, output_file_path):
         raise HTTPException(status_code=500, 
                           detail=f"An error occurred: {str(err)}")
 
-# async def find_similar_comments(input_file_path: str, output_file_path):
-    # if not output_file_path:
-    #     raise HTTPException(status_code=400, detail=f"invalid output filename") 
+async def find_similar_comments(input_file_path: str, output_file_path):
+    if not output_file_path:
+        raise HTTPException(status_code=400, detail=f"invalid output filename") 
     
-    # if not validate_path(input_file_path) or not validate_path(output_file_path):
-    #     raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
+    if not validate_path(input_file_path) or not validate_path(output_file_path):
+        raise HTTPException(status_code=400, detail=f"Not configured to process files outside '/data'")
 
-    # is_valid_output_file = await is_file_empty_or_nonexistent(output_file_path)
+    is_valid_output_file = await is_file_empty_or_nonexistent(output_file_path)
 
-    # if not is_valid_output_file :
-    #     raise HTTPException(status_code=400, detail="Overwriting file is not allowed. Use a different name for the output file")
-    # try:
-    #     async with aiofiles.open(input_file_path, mode='r') as f:
-    #         try:
-    #             lines = await f.readlines()
-    #         except Exception as e:
-    #             raise HTTPException(status_code=400, detail=f"invalid input filename")           
-    #     comments = [line.strip() for line in lines if line.strip()]
+    if not is_valid_output_file :
+        raise HTTPException(status_code=400, detail="Overwriting file is not allowed. Use a different name for the output file")
+    try:
+        async with aiofiles.open(input_file_path, mode='r') as f:
+            try:
+                lines = await f.readlines()
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"invalid input filename")           
+            
+        embeddings_np = await get_embeddings(lines)
+               
+        sim_matrix = cosine_similarity(embeddings_np)
+        np.fill_diagonal(sim_matrix, -np.inf)
         
-    #     if len(comments) < 2:
-    #         raise HTTPException(status_code=400, detail=f"Need at least two comments to find a similar pair.")
+        idx1, idx2 = np.unravel_index(np.argmax(sim_matrix), sim_matrix.shape)
+        most_similar_pair = [lines[idx1], lines[idx2]]
         
-    #     # tasks = [get_embedding(comment) for comment in comments]
-    #     # embeddings = await asyncio.gather(*tasks)
-    #     embeddings = await get_embeddings(comments)
-        
-        
-        # embeddings_np = np.array(embeddings)
-        
-        # sim_matrix = cosine_similarity(embeddings_np)
-        # np.fill_diagonal(sim_matrix, -np.inf)
-        
-        # idx1, idx2 = np.unravel_index(np.argmax(sim_matrix), sim_matrix.shape)
-        # most_similar_pair = [comments[idx1], comments[idx2]]
-        
-        # async with aiofiles.open(output_file_path, mode='w') as f:
-        #     for comment in most_similar_pair:
-        #         await f.write(comment + "\n")
+        async with aiofiles.open(output_file_path, mode='w') as f:
+            for comment in most_similar_pair:
+                await f.write(comment + "\n")
     
-    # except Exception as e:
-    #     raise Exception(f"Error processing request: {str(e)}")   
+    except Exception as e:
+        raise Exception(f"Error processing request: {str(e)}")   
 
-# async def get_embeddings(comments: List[str]) -> List[float]:
+async def get_embeddings(comments: str):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                "https://llmfoundry.straive.com/openai/v1/embeddings",
+                "http://aiproxy.sanand.workers.dev/openai/v1/embeddings",
                 json={
                     "model": "text-embedding-3-small",
                     "input": comments
@@ -569,7 +560,7 @@ async def extract_card_number(image_file_path: str, output_file_path):
             )
             response.raise_for_status()
             data = response.json()
-            return data["data"][0]["embedding"]
+            return np.array([item["embedding"] for item in data["data"]])
     except httpx.HTTPStatusError as http_err:
         raise HTTPException(status_code=500, 
                           detail=f"HTTP error occurred: {http_err}")
@@ -581,9 +572,25 @@ async def clone_git_repo(repo_link: str, clone_dir: str):
 
     try:
 
+        if not repo_link:
+            raise HTTPException(status_code=400, detail=f"invalid repo")
+        if not clone_dir:
+            raise HTTPException(status_code=400, detail=f"invalid directory")
         if not validate_path(clone_dir):
             raise HTTPException(status_code=400, detail=f"not configured to process files outside '/data'")
-    
+
+        if os.path.exists(clone_dir) and os.path.isdir(os.path.join(clone_dir, ".git")):
+            raise HTTPException(
+                status_code=400,
+                detail="Repository already cloned in the target directory"
+            )
+
+        check_repo_command = f"git ls-remote {repo_link}"
+        check_repo_output = await run_command(check_repo_command)
+        if not check_repo_output.strip():
+            raise HTTPException(status_code=404, detail="Remote repository not found")
+
+
         clone_command = f"git clone {repo_link} {clone_dir}"
         await run_command(clone_command)
 
@@ -591,10 +598,10 @@ async def clone_git_repo(repo_link: str, clone_dir: str):
         async with aiofiles.open(readme_path, "a") as f:
             await f.write("\nAutomated commit from async script using subprocess.\n")
 
-        stage_command = f"cd {clone_dir} && git add README.md"
+        stage_command = f'cd {os.path.abspath(clone_dir)} && git add README.md'
         await run_command(stage_command)
 
-        commit_command = f"cd {clone_dir} && git commit -m 'Automated commit: updated README.md'"
+        commit_command = f'cd {os.path.abspath(clone_dir)} && git commit -m "Automated commit: updated README.md"'
         await run_command(commit_command)
 
         return {
@@ -646,7 +653,7 @@ async def read_file(path: str):
     try:
         async with aiofiles.open(full_path, mode="r") as f:
             content = await f.read()    
-        return PlainTextResponse(content)
+        return content.strip('"')
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="")
     except Exception as e:

@@ -202,8 +202,7 @@
                 },
                 "clone_dir": {
                     "type": "string",
-                    "description": "Path to clone the repo",
-                    "default": "/data/repo"
+                    "description": "Path to clone the repo"
                 }
             },
             "required": ["repo_link", "clone_dir"]
