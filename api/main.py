@@ -24,7 +24,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-api_key = os.getenv("AIPROXY_TOKEN")
+#api_key = os.getenv("AIPROXY_TOKEN")
+api_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6Im1vaGFtZWRhc2hpcS5zeWVkbXVzdGFmYUBzdHJhaXZlLmNvbSJ9.aHWrV2TkUpXO3ArJbtWqUqlN-bFZtWNuFmSJETTULAg"
 
 headers = {
     "Authorization": f"Bearer {api_key}",
